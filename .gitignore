@@ -1,0 +1,235 @@
+import numpy as np
+import re
+import networkx as nx
+import os
+import cobra.test
+import matplotlib.pyplot as plt
+import graphviz
+import random
+#import pydot
+from igraph import *
+os.chdir('C:\Users\Diego Salazar\Documents\Python')
+#os.listdir(os.getcwd())
+
+
+# In[13]:
+
+#model = cobra.io.read_sbml_model('lateral_ventricle_neuronal_cells.xml')
+
+#for i in xrange(len(model.reactions)):
+    #print model.reactions[i].reaction
+
+
+# In[4]:
+
+model = cobra.io.read_sbml_model('recon2.v02.xml')
+model.change_objective('ATPS4m')
+model.optimize()
+
+
+# In[26]:
+
+def is_reversible_recon(expression):
+    return "<=>" in str(expression)
+
+def is_irreversible_recon(expression):
+    return "-->" in str(expression) or "<--" in str(expression)
+
+def remove_coefficient(expression):
+    return re.sub(r"^((\d+\.)?\d+\s)?","", expression)
+
+def split_reaction(expression):
+    return expression.replace(" --", "/").replace("-- ","/").replace(" <=> ", "/").split("/")
+    
+def split_metabolites(expression):
+    return expression.replace(" + ", "/").split("/")
+
+def split_metabolites_from_list(expression):
+    return expression[0].replace(" + ", "/").split("/"), expression[1].replace(" + ", "/").split("/")
+
+
+# In[27]:
+
+#abrir archivo, separar por delimiter, emplear string.
+#hmr, rxn, ec, ge, co, sub = np.loadtxt("n_g_recon.txt", delimiter="\t", dtype="string", unpack=True)
+#quitar ultimo dato el cual es vacio
+
+
+
+#Diccionario general, donde 0->rxn - 1->ec - 2->ge - 3->co - 4->sub
+dict_general = {}
+for x in xrange(len(model.reactions)):
+    dict_general[model.reactions[x]] = [model.reactions[x].reaction,model.reactions[x].subsystem,model.reactions[x].genes]
+
+#diccionario de irrev rev.
+irrev_rev = []
+dict_irrev_rev = {}
+for x in xrange(len(model.reactions)):
+    if is_reversible_recon(model.reactions[x].reaction):
+        irrev_rev.append(1)
+    elif is_irreversible_recon(model.reactions[x].reaction):
+        irrev_rev.append(0)
+
+for x in xrange(len(model.reactions)):
+    dict_irrev_rev[model.reactions[x]] = irrev_rev[x]
+
+#crear un diccionario: como key -> hmr_index como value -> rxn
+l_hmr = {}
+for x in xrange(len(model.reactions)):
+    l_hmr[model.reactions[x]] = model.reactions[x].reaction.strip()
+
+#diccionario de E.C. - rxn_izq_der, se dejo [['utp[e]'], ['']] para las reacciones de tipo utp[e] <=>
+l_ec_rxn_final = []
+l_inter = []
+dict_ec_rxn_izq_der = {}
+
+for key in l_hmr:
+    #poner la depuracion de expresiones regulares
+    para_recon = " " + l_hmr[key] + " "
+    l_ec_rxn = split_reaction(para_recon)
+    try:
+        l_inter = l_ec_rxn[0].replace(" + ", "/").split("/"), l_ec_rxn[1].replace(" + ", "/").split("/")
+    except:
+        l_inter = l_ec_rxn[0].replace(" + ", "/").split("/")
+    for x in xrange(len(l_inter)):
+        for y in xrange(len(l_inter[x])):
+            try:
+                l_inter[x][y] = l_inter[x][y].strip()
+                l_inter[x][y] = remove_coefficient(l_inter[x][y])
+            except:
+                pass
+    dict_ec_rxn_izq_der[key] = list(l_inter)
+    
+#partir las reacciones y meterlas en nuevo diccionario.
+rxn_rev = list()
+rxn_irrev = list()
+rxn_irrev_final = dict()
+for x in xrange(len(model.reactions)):
+    if "<=>" in model.reactions[x].reaction:
+        rxn_rev = model.reactions[x].reaction.replace("<=>","/").split("/")
+    elif "--" in model.reactions[x].reaction:
+        rxn_irrev = model.reactions[x].reaction.replace("--","/").split("/")
+
+#lista de metabolitos. Se cargan, se quitan string no necesarios y se separan por /
+reaction = [model.reactions[x].reaction for x in xrange(len(model.reactions))]
+reaction = [x.replace(" + ", "/").replace("<=>", "/").replace("--", "/") for x in reaction]
+reaction = [x.split("/") for x in reaction]
+l = list(reaction[0])
+#a = []
+
+#Conteo para lista metabolitos. 
+for x in xrange(0, len(reaction)):
+    for j in xrange(0,len(reaction[x])):
+        #reaction[x][j] = re.sub(r"^((\d\.)?\d+\s)?","", reaction[x][j])
+        reaction[x][j] = reaction[x][j].strip()
+        reaction[x][j] = remove_coefficient(reaction[x][j])
+        #reaction[x][j] = re.sub(r"^[0-9]+\D[0-9]+\s","", reaction[x][j])
+        #reaction[x][j] = re.sub(r"^[0-9]+\s","", reaction[x][j])
+        #a.append(reaction[x])
+    l+=reaction[x]
+
+#diccionario de hmr_ con metab en forma de lista.
+d_hmr = {}
+for x in xrange(len(model.reactions)):
+    d_hmr[model.reactions[x]] = reaction[x]
+d_recon_hmr = {}
+for key in d_hmr:
+    if '' in d_hmr[key]:
+        d_hmr[key].sort(reverse=True)
+        d_hmr[key].pop()
+        d_recon_hmr[key] = d_hmr[key]
+    else:
+        d_recon_hmr[key] = d_hmr[key]
+        
+#diccionario de conteo de metabolitos
+counts = dict()
+for metab in l:
+    counts[metab] = counts.get(metab, 0) + 1
+#print counts
+
+#quitar duplicados (set()) y convertir en lista nuevamente.
+l.sort()
+lista_final_metab = list(set(l))
+#print len(list_final_metab)
+
+
+# In[28]:
+
+#relacion enzima-enzima por metabolito_reactivo-metabolito_producto
+#lista_hmr = []
+G=nx.Graph()
+valor_interact = 10
+for key in dict_ec_rxn_izq_der:
+    for i in dict_ec_rxn_izq_der[key][0]:
+        for key_2 in dict_ec_rxn_izq_der:
+            try:
+                if counts[i] <= valor_interact:
+                    if i in dict_ec_rxn_izq_der[key_2][1]:
+                        G.add_edge(str(key_2), str(key), label=i)
+                        G.add_node(str(key_2), flux=round(model.solution.x_dict[str(key_2)]))
+                        G.add_node(str(key), flux=round(model.solution.x_dict[str(key)]))
+                    else:
+                        pass
+                else:
+                    pass
+            except:
+                pass
+    for a in dict_ec_rxn_izq_der[key][1]:
+        for key_2 in dict_ec_rxn_izq_der:
+            try:
+                if counts[i] <= valor_interact:
+                    if j in dict_ec_rxn_izq_der[key_2][0]:
+                        G.add_edge(str(key), str(key_2), label=i)
+                    else:
+                        pass
+                else:
+                    pass
+            except:
+                pass
+
+
+# In[29]:
+
+#Diccionario de (enzima-enzima): label (metabolito de union)
+label=nx.get_edge_attributes(G,'label')
+
+#Create a subgraph from a str, e.g. '_r' which means ribosome compartment
+lista_nodos = []
+for w in label:
+    if '_r' in label[w]:
+        for termino in w:
+            lista_nodos.append(termino)
+            
+#Save the subnetwork as .net and .graphml
+nx.write_pajek(H, "test.net")
+nx.write_graphml(H, "test.graphml")
+
+#Print lista_nodos
+#len(lista_nodos)
+
+#Use igraph an read .graphml file
+g = Graph.Read_GraphML("test.graphml")
+summary(g)
+
+#Determine the layout
+layout = g.layout('rt_circular')
+
+#get a sample network
+plot(g, layout = layout)
+plot(g, "test_network.png")
+
+#Attribute color for nodes 
+color_dict = {'0.0': 'brown',"0.1": "blue", "0.2": "pink", '0.3': "red", '0.4': 'white', '0.5': 'yellow', '0.6': 'gray', '0.7': 'green',
+              '0.8': 'purple', '0.9': 'orange', '1.0': 'black'}
+g.vs["color"] = [color_dict[flujo] for flujo in g.vs["flux"]]
+
+#Get different colors to the nodes
+for i in xrange(10):
+    lista_nume = []
+    name = str(i) + '_file' + '.png'
+    for i in xrange(92):
+        lista_nume.append(str(round(random.random(),1)))
+    g.vs['flux'] = lista_nume
+    plot(g, vertex_order=True)
+    plot(g, name)
+
